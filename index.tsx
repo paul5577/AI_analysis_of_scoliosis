@@ -126,9 +126,9 @@ const compressImage = (file: File): Promise<string> => {
                     reject(new Error("Canvas context is null"));
                 }
             };
-            img.onerror = (err) => reject(err);
+            img.onerror = (err) => reject(new Error("Image load failed"));
         };
-        reader.onerror = (err) => reject(err);
+        reader.onerror = (err) => reject(new Error("File read failed"));
     });
 };
 
@@ -149,14 +149,22 @@ const App: React.FC = () => {
   useEffect(() => {
     // IMPORTANT: Replace with your actual EmailJS Public Key
     // Safety check: ensure emailjs is loaded before calling init to prevent white screen crash
-    if (window.emailjs) {
-        try {
-            window.emailjs.init({ publicKey: 'YOUR_PUBLIC_KEY' });
-        } catch (e) {
-            console.error("EmailJS init failed:", e);
+    // Using setTimeout to give the script a moment to load if it's deferred
+    const initEmailJS = () => {
+        if (window.emailjs) {
+            try {
+                window.emailjs.init({ publicKey: 'YOUR_PUBLIC_KEY' });
+            } catch (e) {
+                console.error("EmailJS init failed:", e);
+            }
         }
+    };
+    
+    if (document.readyState === 'complete') {
+        initEmailJS();
     } else {
-        console.warn("EmailJS script not loaded.");
+        window.addEventListener('load', initEmailJS);
+        return () => window.removeEventListener('load', initEmailJS);
     }
   }, []);
 
@@ -176,6 +184,12 @@ const App: React.FC = () => {
       return;
     }
 
+    // Check environment variable (API Key)
+    if (!process.env.API_KEY) {
+        setError('시스템 오류: API Key가 설정되지 않았습니다. 배포 환경 변수를 확인해주세요.');
+        return;
+    }
+
     setIsLoading(true);
     setError('');
     setResult(null);
@@ -184,7 +198,12 @@ const App: React.FC = () => {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
 
       // Use compressImage instead of raw blobToBase64 to handle large mobile photos
-      const base64Data = await compressImage(imageFile);
+      let base64Data = '';
+      try {
+        base64Data = await compressImage(imageFile);
+      } catch (imgError) {
+        throw new Error("이미지 처리 실패: 파일이 너무 크거나 손상되었습니다.");
+      }
       
       const imagePart = {
         inlineData: {
@@ -222,12 +241,32 @@ const App: React.FC = () => {
         },
       });
       
+      if (!response.text) {
+          throw new Error("AI 응답이 없습니다. (Safety block or empty response)");
+      }
+
       const resultJson = JSON.parse(response.text);
       setResult(resultJson);
 
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      setError('분석 중 오류가 발생했습니다. 사진이 너무 흐리거나 형식이 올바르지 않을 수 있습니다. 더 선명한 사진으로 다시 시도해주세요.');
+      let errorMsg = '분석 중 오류가 발생했습니다.';
+      
+      // Provide more specific error messages for debugging
+      const errorString = e.toString().toLowerCase();
+      if (errorString.includes('api key') || errorString.includes('403') || errorString.includes('401')) {
+          errorMsg = '시스템 오류: API 인증에 실패했습니다. (API Key 설정 확인 필요)';
+      } else if (errorString.includes('400')) {
+          errorMsg = '요청 오류: 이미지 형식을 확인하거나 다른 사진으로 시도해주세요.';
+      } else if (errorString.includes('safety')) {
+          errorMsg = 'AI가 이미지를 분석할 수 없습니다. (유해/부적절한 콘텐츠로 감지됨)';
+      } else if (errorString.includes('fetch') || errorString.includes('network')) {
+          errorMsg = '네트워크 연결 상태를 확인해주세요.';
+      } else {
+          errorMsg += ' 사진이 너무 흐리거나 올바르지 않은 형식일 수 있습니다. 더 선명한 사진으로 다시 시도해주세요.';
+      }
+      
+      setError(errorMsg);
     } finally {
       setIsLoading(false);
     }
