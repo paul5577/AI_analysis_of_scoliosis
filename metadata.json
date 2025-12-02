@@ -1,0 +1,7 @@
+{
+  "name": "척추 측만증 분석 앱 20251114",
+  "description": "An AI-powered app to analyze back photos for potential signs of scoliosis by estimating the Cobb angle.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
