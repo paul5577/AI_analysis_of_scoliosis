@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -85,6 +86,51 @@ const ConsultationModal: React.FC<{ onClose: () => void; onSubmit: (data: any) =
     );
 };
 
+// Image compression utility
+const compressImage = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (event) => {
+            const img = new Image();
+            img.src = event.target?.result as string;
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                let width = img.width;
+                let height = img.height;
+                const MAX_WIDTH = 1024;
+                const MAX_HEIGHT = 1024;
+
+                // Resize logic
+                if (width > height) {
+                    if (width > MAX_WIDTH) {
+                        height *= MAX_WIDTH / width;
+                        width = MAX_WIDTH;
+                    }
+                } else {
+                    if (height > MAX_HEIGHT) {
+                        width *= MAX_HEIGHT / height;
+                        height = MAX_HEIGHT;
+                    }
+                }
+
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    ctx.drawImage(img, 0, 0, width, height);
+                    // Compress to JPEG with 0.7 quality
+                    const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+                    resolve(dataUrl.split(',')[1]);
+                } else {
+                    reject(new Error("Canvas context is null"));
+                }
+            };
+            img.onerror = (err) => reject(err);
+        };
+        reader.onerror = (err) => reject(err);
+    });
+};
 
 const App: React.FC = () => {
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -102,7 +148,16 @@ const App: React.FC = () => {
   
   useEffect(() => {
     // IMPORTANT: Replace with your actual EmailJS Public Key
-    window.emailjs.init({ publicKey: 'YOUR_PUBLIC_KEY' });
+    // Safety check: ensure emailjs is loaded before calling init to prevent white screen crash
+    if (window.emailjs) {
+        try {
+            window.emailjs.init({ publicKey: 'YOUR_PUBLIC_KEY' });
+        } catch (e) {
+            console.error("EmailJS init failed:", e);
+        }
+    } else {
+        console.warn("EmailJS script not loaded.");
+    }
   }, []);
 
   const handleFileSelect = (files: FileList | null) => {
@@ -114,25 +169,10 @@ const App: React.FC = () => {
       setError('');
     }
   };
-  
-  const blobToBase64 = (blob: Blob): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (reader.result) {
-          resolve((reader.result as string).split(',')[1]);
-        } else {
-          reject('Failed to convert blob to base64');
-        }
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  };
 
   const handleAnalyze = async () => {
     if (!imageFile) {
-      setError('Please upload an image first.');
+      setError('이미지를 먼저 업로드해주세요.');
       return;
     }
 
@@ -143,10 +183,12 @@ const App: React.FC = () => {
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
 
-      const base64Data = await blobToBase64(imageFile);
+      // Use compressImage instead of raw blobToBase64 to handle large mobile photos
+      const base64Data = await compressImage(imageFile);
+      
       const imagePart = {
         inlineData: {
-          mimeType: imageFile.type,
+          mimeType: 'image/jpeg', // Always converting to jpeg in compressImage
           data: base64Data,
         },
       };
@@ -157,7 +199,7 @@ const App: React.FC = () => {
           parts: [
             imagePart,
             {
-              text: "You are an expert orthopedic AI assistant specializing in scoliosis analysis. Your task is to meticulously analyze the provided image of a human back to estimate the Cobb angle with the highest possible accuracy. Follow this precise protocol:\n\n1.  **Identify Spinal Landmarks:** First, carefully identify the vertebral column in the image. Scan the entire spine to locate the primary curve.\n2.  **Determine End Vertebrae:**\n    *   Identify the **upper end vertebra**: This is the most superior vertebra of the curve that tilts the most towards the concave side of the curve.\n    *   Identify the **lower end vertebra**: This is the most inferior vertebra of the curve that tilts the most towards the concave side of the curve.\n3.  **Simulate Line Placement:**\n    *   Mentally draw a line parallel to the **superior endplate** (the top surface) of the upper end vertebra.\n    *   Mentally draw another line parallel to the **inferior endplate** (the bottom surface) of the lower end vertebra.\n4.  **Calculate Cobb Angle:** Calculate the precise angle where these two lines intersect. This value is the Cobb angle.\n5.  **Classify Severity:** Based on the calculated angle, classify the condition using these standard medical thresholds:\n    *   **Normal**: Less than 10 degrees.\n    *   **Mild**: 10 to 24 degrees.\n    *   **High-Risk**: 25 degrees or more.\n\nReturn a JSON object containing only the calculated `cobbAngle` (as a number, rounded to one decimal place) and the corresponding `classification` string. Your analysis must be as accurate as a clinical assessment.",
+              text: "You are an expert orthopedic AI assistant specializing in scoliosis analysis. Your task is to meticulously analyze the provided image of a human back to estimate the Cobb angle.\n\nProtocol:\n1. Identify if the image is a clear photo of a human back suitable for analysis. If the image is blurry, irrelevant (not a back), or too dark/low-quality to determine landmarks, return `cobbAngle: -1` and `classification: 'Inconclusive'`.\n2. If the image is valid, identify Spinal Landmarks (vertebral column).\n3. Determine Upper and Lower End Vertebrae.\n4. Calculate the Cobb angle.\n5. Classify Severity:\n   - Normal: < 10 degrees\n   - Mild: 10-24 degrees\n   - High-Risk: >= 25 degrees\n\nReturn a JSON object containing only the calculated `cobbAngle` (number, rounded to one decimal place) and `classification` string.",
             },
           ],
         },
@@ -168,11 +210,11 @@ const App: React.FC = () => {
             properties: {
               cobbAngle: {
                 type: Type.NUMBER,
-                description: 'The calculated Cobb angle in degrees, rounded to one decimal place.',
+                description: 'The calculated Cobb angle in degrees. Return -1 if analysis fails due to image quality.',
               },
               classification: {
                 type: Type.STRING,
-                description: "Classification of the condition: 'Normal', 'Mild', or 'High-Risk'.",
+                description: "Classification: 'Normal', 'Mild', 'High-Risk', or 'Inconclusive'.",
               },
             },
             required: ['cobbAngle', 'classification'],
@@ -185,7 +227,7 @@ const App: React.FC = () => {
 
     } catch (e) {
       console.error(e);
-      setError('An error occurred during analysis. Please ensure the image clearly shows the back and try again.');
+      setError('분석 중 오류가 발생했습니다. 사진이 너무 흐리거나 형식이 올바르지 않을 수 있습니다. 더 선명한 사진으로 다시 시도해주세요.');
     } finally {
       setIsLoading(false);
     }
@@ -208,6 +250,8 @@ const App: React.FC = () => {
         return 'mild';
       case 'high-risk':
         return 'high-risk';
+      case 'inconclusive':
+        return 'high-risk'; // Use a warning style or create a new one, borrowing high-risk/error style for visibility
       default:
         return '';
     }
@@ -217,13 +261,16 @@ const App: React.FC = () => {
         setIsSending(true);
         setFormMessage(null);
         try {
+            if (!window.emailjs) {
+                throw new Error("Email service not available");
+            }
             // IMPORTANT: Replace with your actual EmailJS Service ID and Template ID
             const serviceID = 'YOUR_SERVICE_ID';
             const templateID = 'YOUR_TEMPLATE_ID';
 
             await window.emailjs.send(serviceID, templateID, {
                 ...formData,
-                cobb_angle: result?.cobbAngle.toFixed(1), // Pass result data to template
+                cobb_angle: result?.cobbAngle.toFixed(1), 
                 classification: result?.classification,
             });
             setFormMessage({ type: 'success', text: '상담 신청이 성공적으로 전송되었습니다. 곧 연락드리겠습니다.'});
@@ -247,6 +294,8 @@ const App: React.FC = () => {
         return <p><strong>경미한 척추측만증</strong>이 의심됩니다. 전문의와 상담을 권장합니다.</p>;
       case 'high-risk':
         return <p><strong>척추측만증 고위험군</strong>으로 분류됩니다. 빠른 시일 내에 전문가의 진단이 필요합니다.</p>;
+      case 'inconclusive':
+        return <p><strong>분석 실패</strong>: 사진이 명확하지 않거나 척추를 식별하기 어렵습니다. 밝고 선명한 등 사진으로 다시 시도해주세요.</p>;
       default:
         return <p>분석 결과를 확인하세요.</p>;
     }
@@ -310,8 +359,8 @@ const App: React.FC = () => {
           <h2>분석 결과</h2>
           <div className={`result-card ${getResultCardClassName(result.classification)}`}>
             <p>
-              <strong>{result.cobbAngle.toFixed(1)}°</strong>
-              콥스 각도
+              <strong>{result.cobbAngle === -1 ? '--' : result.cobbAngle.toFixed(1)}°</strong>
+              {result.cobbAngle === -1 ? '측정 불가' : '콥스 각도'}
             </p>
           </div>
           <div className={`result-card ${getResultCardClassName(result.classification)}`}>
