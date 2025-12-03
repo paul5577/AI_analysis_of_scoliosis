@@ -14,6 +14,52 @@ declare global {
     }
 }
 
+// Helper to check environment variables explicitly to support Vite static replacement
+const getEnvConfig = () => {
+    let apiKey = '';
+    let emailJsPublicKey = '';
+    let emailJsServiceId = '';
+    let emailJsTemplateId = '';
+
+    // 1. Try Vite (VITE_ prefix) - Explicit access required for Vite static replacement
+    try {
+        // @ts-ignore
+        if (typeof import.meta !== 'undefined' && import.meta.env) {
+            // @ts-ignore
+            if (import.meta.env.VITE_API_KEY) apiKey = import.meta.env.VITE_API_KEY;
+            // @ts-ignore
+            if (import.meta.env.VITE_EMAILJS_PUBLIC_KEY) emailJsPublicKey = import.meta.env.VITE_EMAILJS_PUBLIC_KEY;
+            // @ts-ignore
+            if (import.meta.env.VITE_EMAILJS_SERVICE_ID) emailJsServiceId = import.meta.env.VITE_EMAILJS_SERVICE_ID;
+            // @ts-ignore
+            if (import.meta.env.VITE_EMAILJS_TEMPLATE_ID) emailJsTemplateId = import.meta.env.VITE_EMAILJS_TEMPLATE_ID;
+        }
+    } catch (e) {}
+
+    // 2. Fallback to process.env for CRA/Next.js/Standard Node (if Vite didn't fill it)
+    if (!apiKey && typeof process !== 'undefined' && process.env) {
+        apiKey = process.env.REACT_APP_API_KEY || process.env.NEXT_PUBLIC_API_KEY || process.env.API_KEY || '';
+    }
+    if (!emailJsPublicKey && typeof process !== 'undefined' && process.env) {
+        emailJsPublicKey = process.env.REACT_APP_EMAILJS_PUBLIC_KEY || process.env.NEXT_PUBLIC_EMAILJS_PUBLIC_KEY || process.env.EMAILJS_PUBLIC_KEY || '';
+    }
+    if (!emailJsServiceId && typeof process !== 'undefined' && process.env) {
+        emailJsServiceId = process.env.REACT_APP_EMAILJS_SERVICE_ID || process.env.NEXT_PUBLIC_EMAILJS_SERVICE_ID || process.env.EMAILJS_SERVICE_ID || '';
+    }
+    if (!emailJsTemplateId && typeof process !== 'undefined' && process.env) {
+        emailJsTemplateId = process.env.REACT_APP_EMAILJS_TEMPLATE_ID || process.env.NEXT_PUBLIC_EMAILJS_TEMPLATE_ID || process.env.EMAILJS_TEMPLATE_ID || '';
+    }
+
+    return {
+        apiKey,
+        emailJs: {
+            publicKey: emailJsPublicKey,
+            serviceId: emailJsServiceId,
+            templateId: emailJsTemplateId
+        }
+    };
+};
+
 const ConsultationModal: React.FC<{ onClose: () => void; onSubmit: (data: any) => Promise<void>; isSending: boolean; formMessage: { type: string, text: string } | null }> = ({ onClose, onSubmit, isSending, formMessage }) => {
     const [formData, setFormData] = useState({
         name: '',
@@ -86,6 +132,54 @@ const ConsultationModal: React.FC<{ onClose: () => void; onSubmit: (data: any) =
     );
 };
 
+// Settings Modal for Manual API Key
+const SettingsModal: React.FC<{ onClose: () => void; currentKey: string; onSave: (key: string) => void; envKeyDetected: boolean }> = ({ onClose, currentKey, onSave, envKeyDetected }) => {
+    const [key, setKey] = useState(currentKey);
+
+    return (
+        <div className="modal-overlay" onClick={onClose}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                <div className="modal-header">
+                    <h2>설정</h2>
+                    <button onClick={onClose} className="modal-close-btn">&times;</button>
+                </div>
+                
+                <div style={{marginBottom: '20px', padding: '10px', background: '#f8f9fa', borderRadius: '8px', border: '1px solid #dee2e6'}}>
+                    <p style={{marginBottom: '5px', fontSize: '0.9rem', fontWeight: 'bold'}}>배포 환경 변수(Vercel) 상태:</p>
+                    {envKeyDetected ? (
+                        <div style={{color: 'green', display: 'flex', alignItems: 'center', gap: '5px'}}>
+                            <span>✅</span> 연결됨 (API Key가 감지되었습니다)
+                        </div>
+                    ) : (
+                        <div style={{color: '#dc3545', display: 'flex', alignItems: 'center', gap: '5px'}}>
+                            <span>❌</span> 감지되지 않음
+                        </div>
+                    )}
+                    {!envKeyDetected && (
+                        <p style={{fontSize: '0.8rem', color: '#666', marginTop: '5px'}}>
+                            정적 웹사이트(Static) 배포 시 환경 변수를 읽지 못할 수 있습니다. 아래에 키를 직접 입력하면 해결됩니다.
+                        </p>
+                    )}
+                </div>
+
+                <div className="form-group">
+                    <label htmlFor="apiKey">Gemini API Key 직접 입력</label>
+                    <input 
+                        type="password" 
+                        id="apiKey" 
+                        value={key} 
+                        onChange={(e) => setKey(e.target.value)} 
+                        placeholder="AIza..."
+                    />
+                </div>
+                <div className="button-group">
+                    <button className="btn" onClick={() => onSave(key)}>저장하기</button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 // Image compression utility
 const compressImage = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -138,27 +232,46 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [result, setResult] = useState<{ cobbAngle: number; classification: string; } | null>(null);
   const [error, setError] = useState<string>('');
-  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
+  
+  const [isConsultationModalOpen, setIsConsultationModalOpen] = useState<boolean>(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [formMessage, setFormMessage] = useState<{type: string, text: string} | null>(null);
-
+  
+  // State for manual API key input
+  const [manualApiKey, setManualApiKey] = useState<string>('');
+  const [envKeyDetected, setEnvKeyDetected] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   
+  // Initialize EmailJS and check for API keys
   useEffect(() => {
-    // IMPORTANT: Replace with your actual EmailJS Public Key
-    // Safety check: ensure emailjs is loaded before calling init to prevent white screen crash
-    // Using setTimeout to give the script a moment to load if it's deferred
+    const config = getEnvConfig();
+    
+    // Check if Env Key is present
+    if (config.apiKey) {
+        setEnvKeyDetected(true);
+    } else {
+        setEnvKeyDetected(false);
+    }
+
     const initEmailJS = () => {
         if (window.emailjs) {
             try {
-                window.emailjs.init({ publicKey: 'YOUR_PUBLIC_KEY' });
+                const publicKey = config.emailJs.publicKey || 'YOUR_PUBLIC_KEY';
+                window.emailjs.init({ publicKey });
             } catch (e) {
                 console.error("EmailJS init failed:", e);
             }
         }
     };
+    
+    // Load manual API key from local storage
+    const savedKey = localStorage.getItem('gemini_api_key');
+    if (savedKey) {
+        setManualApiKey(savedKey);
+    }
     
     if (document.readyState === 'complete') {
         initEmailJS();
@@ -178,15 +291,41 @@ const App: React.FC = () => {
     }
   };
 
+  const handleSaveApiKey = (key: string) => {
+      const trimmedKey = key.trim();
+      if (trimmedKey.length > 10) {
+          localStorage.setItem('gemini_api_key', trimmedKey);
+          setManualApiKey(trimmedKey);
+          setError('');
+          setIsSettingsModalOpen(false);
+          alert("API Key가 저장되었습니다. 이제 분석을 시작해보세요.");
+      } else {
+          alert("유효한 API Key를 입력해주세요.");
+      }
+  };
+
   const handleAnalyze = async () => {
     if (!imageFile) {
       setError('이미지를 먼저 업로드해주세요.');
       return;
     }
 
-    // Check environment variable (API Key)
-    if (!process.env.API_KEY) {
-        setError('시스템 오류: API Key가 설정되지 않았습니다. 배포 환경 변수를 확인해주세요.');
+    const envConfig = getEnvConfig();
+    let apiKey = envConfig.apiKey;
+    
+    if (!apiKey) {
+        apiKey = manualApiKey;
+    }
+    
+    // If still no key, verify local storage as last resort
+    if (!apiKey) {
+        apiKey = localStorage.getItem('gemini_api_key') || '';
+    }
+
+    if (!apiKey) {
+        // If no key found anywhere, open settings modal automatically
+        setIsSettingsModalOpen(true);
+        setError('API Key가 필요합니다. 설정창에서 입력해주세요.');
         return;
     }
 
@@ -195,9 +334,8 @@ const App: React.FC = () => {
     setResult(null);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+      const ai = new GoogleGenAI({ apiKey: apiKey });
 
-      // Use compressImage instead of raw blobToBase64 to handle large mobile photos
       let base64Data = '';
       try {
         base64Data = await compressImage(imageFile);
@@ -207,7 +345,7 @@ const App: React.FC = () => {
       
       const imagePart = {
         inlineData: {
-          mimeType: 'image/jpeg', // Always converting to jpeg in compressImage
+          mimeType: 'image/jpeg',
           data: base64Data,
         },
       };
@@ -242,7 +380,7 @@ const App: React.FC = () => {
       });
       
       if (!response.text) {
-          throw new Error("AI 응답이 없습니다. (Safety block or empty response)");
+          throw new Error("AI 응답이 없습니다.");
       }
 
       const resultJson = JSON.parse(response.text);
@@ -251,19 +389,17 @@ const App: React.FC = () => {
     } catch (e: any) {
       console.error(e);
       let errorMsg = '분석 중 오류가 발생했습니다.';
-      
-      // Provide more specific error messages for debugging
       const errorString = e.toString().toLowerCase();
+      
       if (errorString.includes('api key') || errorString.includes('403') || errorString.includes('401')) {
-          errorMsg = '시스템 오류: API 인증에 실패했습니다. (API Key 설정 확인 필요)';
+          errorMsg = 'API Key 인증 실패. 설정창에서 키를 다시 확인해주세요.';
+          setIsSettingsModalOpen(true); // Auto-open settings on auth error
       } else if (errorString.includes('400')) {
-          errorMsg = '요청 오류: 이미지 형식을 확인하거나 다른 사진으로 시도해주세요.';
+          errorMsg = '이미지 오류: 다른 사진으로 시도해보세요.';
       } else if (errorString.includes('safety')) {
-          errorMsg = 'AI가 이미지를 분석할 수 없습니다. (유해/부적절한 콘텐츠로 감지됨)';
-      } else if (errorString.includes('fetch') || errorString.includes('network')) {
-          errorMsg = '네트워크 연결 상태를 확인해주세요.';
+          errorMsg = 'AI가 이미지를 분석할 수 없습니다. (콘텐츠 정책)';
       } else {
-          errorMsg += ' 사진이 너무 흐리거나 올바르지 않은 형식일 수 있습니다. 더 선명한 사진으로 다시 시도해주세요.';
+          errorMsg += ' 네트워크 상태나 이미지 형식을 확인해주세요.';
       }
       
       setError(errorMsg);
@@ -283,70 +419,86 @@ const App: React.FC = () => {
 
   const getResultCardClassName = (classification: string) => {
     switch (classification.toLowerCase()) {
-      case 'normal':
-        return 'normal';
-      case 'mild':
-        return 'mild';
-      case 'high-risk':
-        return 'high-risk';
-      case 'inconclusive':
-        return 'high-risk'; // Use a warning style or create a new one, borrowing high-risk/error style for visibility
-      default:
-        return '';
+      case 'normal': return 'normal';
+      case 'mild': return 'mild';
+      case 'high-risk': return 'high-risk';
+      case 'inconclusive': return 'high-risk'; 
+      default: return '';
     }
   };
   
-    const handleFormSubmit = async (formData: any) => {
+  const handleFormSubmit = async (formData: any) => {
         setIsSending(true);
         setFormMessage(null);
         try {
-            if (!window.emailjs) {
-                throw new Error("Email service not available");
-            }
-            // IMPORTANT: Replace with your actual EmailJS Service ID and Template ID
-            const serviceID = 'YOUR_SERVICE_ID';
-            const templateID = 'YOUR_TEMPLATE_ID';
+            if (!window.emailjs) throw new Error("Email service not available");
+            
+            const config = getEnvConfig();
+            const serviceID = config.emailJs.serviceId || 'YOUR_SERVICE_ID';
+            const templateID = config.emailJs.templateId || 'YOUR_TEMPLATE_ID';
 
             await window.emailjs.send(serviceID, templateID, {
                 ...formData,
                 cobb_angle: result?.cobbAngle.toFixed(1), 
                 classification: result?.classification,
             });
-            setFormMessage({ type: 'success', text: '상담 신청이 성공적으로 전송되었습니다. 곧 연락드리겠습니다.'});
-            setTimeout(() => {
-                setIsModalOpen(false);
-            }, 3000);
+            setFormMessage({ type: 'success', text: '상담 신청이 성공적으로 전송되었습니다.'});
+            setTimeout(() => { setIsConsultationModalOpen(false); }, 3000);
         } catch (error) {
             console.error('EmailJS error:', error);
-            setFormMessage({ type: 'error', text: '전송 중 오류가 발생했습니다. 다시 시도해주세요.'});
+            setFormMessage({ type: 'error', text: '전송 실패. 잠시 후 다시 시도해주세요.'});
         } finally {
             setIsSending(false);
         }
-    };
-
+  };
 
   const getResultContent = (classification: string) => {
     switch (classification.toLowerCase()) {
-      case 'normal':
-        return <p>척추가 <strong>정상</strong> 범위에 있습니다.</p>;
-      case 'mild':
-        return <p><strong>경미한 척추측만증</strong>이 의심됩니다. 전문의와 상담을 권장합니다.</p>;
-      case 'high-risk':
-        return <p><strong>척추측만증 고위험군</strong>으로 분류됩니다. 빠른 시일 내에 전문가의 진단이 필요합니다.</p>;
-      case 'inconclusive':
-        return <p><strong>분석 실패</strong>: 사진이 명확하지 않거나 척추를 식별하기 어렵습니다. 밝고 선명한 등 사진으로 다시 시도해주세요.</p>;
-      default:
-        return <p>분석 결과를 확인하세요.</p>;
+      case 'normal': return <p>척추가 <strong>정상</strong> 범위에 있습니다.</p>;
+      case 'mild': return <p><strong>경미한 척추측만증</strong>이 의심됩니다. 전문의와 상담을 권장합니다.</p>;
+      case 'high-risk': return <p><strong>척추측만증 고위험군</strong>으로 분류됩니다. 전문가의 진단이 필요합니다.</p>;
+      case 'inconclusive': return <p><strong>분석 실패</strong>: 사진이 명확하지 않습니다. 밝고 선명한 등 사진으로 다시 시도해주세요.</p>;
+      default: return <p>분석 결과를 확인하세요.</p>;
     }
   }
 
+  // Determine if we need to alert the user about missing keys
+  const showSettingsAlert = !envKeyDetected && !manualApiKey;
 
   return (
     <>
     <div className="container">
-      <header>
+      <header style={{position: 'relative'}}>
         <h1>척추측만증 AI 분석</h1>
         <p>사진 한 장으로 척추의 휨 정도를 확인해보세요.</p>
+        <div style={{position: 'absolute', top: '-10px', right: '-10px'}}>
+            <button 
+                onClick={() => setIsSettingsModalOpen(true)}
+                style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: '1.2rem',
+                    color: '#999',
+                    padding: '5px'
+                }}
+                aria-label="Settings"
+            >
+                ⚙️
+            </button>
+            {showSettingsAlert && (
+                <span style={{
+                    position: 'absolute',
+                    top: '5px',
+                    right: '5px',
+                    width: '8px',
+                    height: '8px',
+                    backgroundColor: '#dc3545',
+                    borderRadius: '50%',
+                    boxShadow: '0 0 0 2px white'
+                }}></span>
+            )}
+        </div>
       </header>
 
       {!result && !isLoading && (
@@ -391,7 +543,11 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {error && <p className="error-message">{error}</p>}
+      {error && (
+        <div className="error-message">
+            <p>{error}</p>
+        </div>
+      )}
 
       {result && (
         <div className="results-section">
@@ -408,7 +564,7 @@ const App: React.FC = () => {
           <div className="button-group">
             <button onClick={handleReset} className="btn btn-secondary">다시 검사하기</button>
             <button
-              onClick={() => { setFormMessage(null); setIsModalOpen(true); }}
+              onClick={() => { setFormMessage(null); setIsConsultationModalOpen(true); }}
               className="btn"
             >
               무료상담하러 가기
@@ -420,7 +576,8 @@ const App: React.FC = () => {
         </div>
       )}
     </div>
-    {isModalOpen && <ConsultationModal onClose={() => setIsModalOpen(false)} onSubmit={handleFormSubmit} isSending={isSending} formMessage={formMessage}/>}
+    {isConsultationModalOpen && <ConsultationModal onClose={() => setIsConsultationModalOpen(false)} onSubmit={handleFormSubmit} isSending={isSending} formMessage={formMessage}/>}
+    {isSettingsModalOpen && <SettingsModal onClose={() => setIsSettingsModalOpen(false)} currentKey={manualApiKey} onSave={handleSaveApiKey} envKeyDetected={envKeyDetected} />}
     </>
   );
 };
